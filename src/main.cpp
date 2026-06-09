@@ -9,6 +9,12 @@
  *   - values are redrawn only on each poll, in their own cell
  */
 
+//**** APPLICATION VERSION (single source: device footer + web footer) ****
+#define APP_VERSION "v3.02"
+
+
+
+
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <ESP8266WiFi.h>
@@ -653,7 +659,6 @@ void drawAllMetrics() {
   drawCharacter(false);
 }
 
-#define FW_VERSION "Ver. 3.02"
 
 // Common footer (bottom): IP on the left, credit + version on the right
 void drawFooter() {
@@ -661,7 +666,7 @@ void drawFooter() {
   tft.setTextDatum(BL_DATUM);
   tft.drawString(WiFi.localIP().toString(), 4, 238, 1);     // device IP address
   tft.setTextDatum(BR_DATUM);
-  tft.drawString("Dev. by YO7ZRO " FW_VERSION, 236, 238, 1);
+  tft.drawString("Dev. by YO7ZRO " APP_VERSION, 236, 238, 1);
 }
 
 void drawStaticLayout() {
@@ -1090,7 +1095,7 @@ void setup() {
     page += "<label>" + String(UI_TO[L]) + "</label><input id=\"schedEnd\" type=\"number\" min=\"0\" max=\"23\" value=\"" + intToString(config.schedEnd) + "\">";
     page += "<button onclick=\"save()\">" + String(UI_SAVE[L]) + "</button>";
     page += "<button id=\"rb\" onclick=\"reboot()\">" + String(UI_REBOOT[L]) + "</button>";
-    page += "<p style=\"color:#FFB000;opacity:0.7;font-size:13px;margin-top:14px;text-align:center;\">MiniWX Receiver &mdash; Developed by YO7ZRO</p>";
+    page += "<p style=\"color:#FFB000;opacity:0.7;font-size:13px;margin-top:14px;text-align:center;\">MiniWX Receiver " APP_VERSION " &mdash; Developed by YO7ZRO</p>";
     page += "<p id=\"status\"></p>";
     page += "<script>";
     page += "function g(){var i=['ssid','pass','bmeHost','bmePath','location','ntpServer','tzOffsetHours','lang','slideSeconds','mainSeconds','graphWindow','brightDay','schedEnabled','brightNight','schedStart','schedEnd','dataSource','aprsCall0','aprsCall1','aprsCall2','aprsActive','aprsLogin','aprsServer','aprsPort','measSeconds','aprsLoc0','aprsLoc1','aprsLoc2','aprsTempOff0','aprsTempOff1','aprsTempOff2'];var p=new URLSearchParams();i.forEach(function(x){var e=document.getElementById(x);p.append(x, e.type==='checkbox'?(e.checked?'1':'0'):e.value);});return p.toString();}";
