@@ -10,7 +10,10 @@
  */
 
 //**** APPLICATION VERSION (single source: device footer + web footer) ****
-#define APP_VERSION "v3.10"
+#define APP_VERSION "v3.02"
+
+
+
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
@@ -56,14 +59,13 @@ struct DeviceConfig {
   String  aprsTempOff0;   // BME280 temperature correction for station 1 (deg C, e.g. -2.0)
   String  aprsTempOff1;   // BME280 temperature correction for station 2
   String  aprsTempOff2;   // BME280 temperature correction for station 3
-  bool    logEnabled;     // web console log (RAM ring buffer) enabled?
 };
 
 
 DeviceConfig config = {
   "", "", "192.168.88.191", "jquery", "pool.ntp.org", 0, "", 0, 0, 60, 0, 100, 20, false, 21, 6,
   /*dataSource*/ 0, /*aprsCall0*/ "", /*aprsCall1*/ "", /*aprsCall2*/ "", /*aprsActive*/ 0,
-  /*aprsLogin*/ "", /*aprsServer*/ "rotate.aprs2.net", /*aprsPort*/ 14580, /*measSeconds*/ 120, /*aprsLoc0*/ "", /*aprsLoc1*/ "", /*aprsLoc2*/ "", /*aprsTempOff0*/ "0", /*aprsTempOff1*/ "0", /*aprsTempOff2*/ "0", /*logEnabled*/ false
+  /*aprsLogin*/ "", /*aprsServer*/ "rotate.aprs2.net", /*aprsPort*/ 14580, /*measSeconds*/ 120, /*aprsLoc0*/ "", /*aprsLoc1*/ "", /*aprsLoc2*/ "", /*aprsTempOff0*/ "0", /*aprsTempOff1*/ "0", /*aprsTempOff2*/ "0"
 };
 
 TFT_eSPI tft = TFT_eSPI();
@@ -293,24 +295,6 @@ bool getLocalTimeSafe(struct tm &info) {
   return true;
 }
 
-/* ===== Web console log (RAM ring buffer, toggled from settings) ===== */
-#define LOG_LINES 80
-String  logBuf[LOG_LINES];
-uint8_t logHead = 0, logCount = 0;
-
-void logMsg(const String &m) {
-  if (!config.logEnabled) return;
-  String ts;
-  struct tm t;
-  if (getLocalTimeSafe(t)) ts = twoDigits(t.tm_hour) + ":" + twoDigits(t.tm_min) + ":" + twoDigits(t.tm_sec);
-  else ts = "+" + String(millis() / 1000) + "s";
-  String line = "[" + ts + "] " + m;
-  if (line.length() > 140) line = line.substring(0, 140);   // cap RAM per line
-  logBuf[logHead] = line;
-  logHead = (logHead + 1) % LOG_LINES;
-  if (logCount < LOG_LINES) logCount++;
-}
-
 void setupNTP() {
   Serial.printf("NTP '%s' tz=%d\n", config.ntpServer.c_str(), config.tzOffsetHours);
   configTime(config.tzOffsetHours * 3600, 0, config.ntpServer.c_str());
@@ -349,11 +333,9 @@ void pollWeather() {
   int code = http.GET();
   if (code == HTTP_CODE_OK) {
     String payload = http.getString();
-    logMsg("SRV< " + payload);
     updateWeatherFromResponse(payload);
   } else {
     Serial.printf("HTTP GET fail: %d\n", code);
-    logMsg("ERROR: HTTP GET " + String(code) + " " + dataUrl);
     weatherValid = false;
   }
   http.end();
@@ -475,17 +457,15 @@ void aprsEnsureConnected() {
     aprsClient.print(cmd + "\r\n");
     aprsRxBuf = "";
     Serial.printf("APRS-IS conectat %s:%d  [%s]\n", srv.c_str(), port, cmd.c_str());
-    logMsg("APRS-IS connected " + srv + ":" + String(port) + " [" + cmd + "]");
   } else {
     Serial.printf("APRS-IS conectare esuata la %s:%d\n", srv.c_str(), port);
-    logMsg("ERROR: APRS-IS connect failed " + srv + ":" + String(port));
   }
 }
 
 void aprsPoll() {
   while (aprsClient.available()) {
     char ch = (char)aprsClient.read();
-    if (ch == '\n') { if (aprsRxBuf.length()) logMsg("APRS< " + aprsRxBuf); aprsParseLine(aprsRxBuf); aprsRxBuf = ""; }
+    if (ch == '\n') { aprsParseLine(aprsRxBuf); aprsRxBuf = ""; }
     else if (ch != '\r') {
       if (aprsRxBuf.length() < 300) aprsRxBuf += ch; else aprsRxBuf = "";
     }
@@ -993,7 +973,6 @@ void setup() {
       if ((v = extractJsonValue(s, "brightDay")).length())    config.brightDay = atoi(v.c_str());
       if ((v = extractJsonValue(s, "brightNight")).length())  config.brightNight = atoi(v.c_str());
       if ((v = extractJsonValue(s, "schedEnabled")).length()) config.schedEnabled = (atoi(v.c_str()) != 0);
-      if ((v = extractJsonValue(s, "logEnabled")).length())   config.logEnabled   = (atoi(v.c_str()) != 0);
       if ((v = extractJsonValue(s, "schedStart")).length())   config.schedStart = atoi(v.c_str());
       if ((v = extractJsonValue(s, "schedEnd")).length())     config.schedEnd = atoi(v.c_str());
       if ((v = extractJsonValue(s, "dataSource")).length()) config.dataSource = atoi(v.c_str());
@@ -1059,17 +1038,14 @@ void setup() {
   server.on("/", HTTP_GET, []() {
     int L = curLang();
     String page = "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>MiniWX Receiver</title>";
-    page += "<style>html{background:#0d0f12;}";
-    page += "body{max-width:520px;margin:0 auto;background:#181b20;color:#e8e8e8;font-family:'Segoe UI',Arial,sans-serif;padding:18px 20px;}";
-    page += "h2{color:#FFB000;}";
-    page += "label{font-size:13px;color:#8a9099;}";
-    page += "input,select{font-size:15px;padding:8px;margin:4px 0 12px;width:100%;box-sizing:border-box;background:#1f232a;color:#e8e8e8;border:1px solid #2a2f37;border-radius:6px;}";
-    page += "button{font-size:15px;padding:10px;margin:8px 0;width:100%;background:#1f232a;color:#e8e8e8;border:1px solid #2a2f37;border-radius:8px;cursor:pointer;}";
-    page += "button:hover{background:#FFB000;color:#000;border-color:#FFB000;}";
-    page += "#rb{color:#FF7A5A;border-color:#3a2a2a;}";
-    page += "#rb:hover{background:#FF7A5A;color:#000;border-color:#FF7A5A;}";
+    page += "<style>body{color:#FFB000;background:#000;font-family:Arial;margin:16px;}";
+    page += "label{font-size:13px;color:#9AA4B2;}";
+    page += "input{font-size:16px;padding:6px;margin:4px 0 10px;width:100%;box-sizing:border-box;background:#111;color:#FFB000;border:1px solid #2A2E37;border-radius:4px;}";
+    page += "select{font-size:16px;padding:6px;margin:4px 0 10px;width:100%;box-sizing:border-box;background:#111;color:#FFB000;border:1px solid #2A2E37;border-radius:4px;}";
+    page += "button{font-size:16px;padding:10px;margin:6px 0;width:100%;background:#111;color:#FFB000;border:1px solid #FFB000;border-radius:6px;}";
+    page += "#rb{color:#FF7A5A;border-color:#FF7A5A;}";
     page += "input[type=checkbox]{width:auto;margin-right:8px;vertical-align:middle;}";
-    page += "#status{min-height:22px;font-size:14px;margin-top:10px;color:#8a9099;}</style></head><body>";
+    page += "#status{min-height:22px;font-size:14px;margin-top:10px;}</style></head><body>";
     page += "<h2>" + String(UI_TITLE[L]) + "</h2>";
     page += "<label>SSID</label><input id=\"ssid\" value=\"" + config.ssid + "\">";
     page += "<label>" + String(UI_PASS[L]) + "</label><input id=\"pass\" type=\"password\" value=\"" + config.pass + "\">";
@@ -1117,14 +1093,12 @@ void setup() {
     page += "<label>" + String(UI_BNIGHT[L]) + "</label><input id=\"brightNight\" type=\"number\" min=\"5\" max=\"100\" value=\"" + intToString(config.brightNight) + "\">";
     page += "<label>" + String(UI_FROM[L]) + "</label><input id=\"schedStart\" type=\"number\" min=\"0\" max=\"23\" value=\"" + intToString(config.schedStart) + "\">";
     page += "<label>" + String(UI_TO[L]) + "</label><input id=\"schedEnd\" type=\"number\" min=\"0\" max=\"23\" value=\"" + intToString(config.schedEnd) + "\">";
-    page += "<label><input id=\"logEnabled\" type=\"checkbox\"" + String(config.logEnabled ? " checked" : "") + ">Web console log</label>";
-    page += "<button type=\"button\" onclick=\"window.open('/console','_blank')\">Console</button><span style=\"color:#8a9099;font-size:12px;margin-left:8px;\">(opens in a new page)</span>";
     page += "<button onclick=\"save()\">" + String(UI_SAVE[L]) + "</button>";
     page += "<button id=\"rb\" onclick=\"reboot()\">" + String(UI_REBOOT[L]) + "</button>";
     page += "<p style=\"color:#FFB000;opacity:0.7;font-size:13px;margin-top:14px;text-align:center;\">MiniWX Receiver " APP_VERSION " &mdash; Developed by YO7ZRO</p>";
     page += "<p id=\"status\"></p>";
     page += "<script>";
-    page += "function g(){var i=['ssid','pass','bmeHost','bmePath','location','ntpServer','tzOffsetHours','lang','slideSeconds','mainSeconds','graphWindow','brightDay','schedEnabled','brightNight','schedStart','schedEnd','dataSource','aprsCall0','aprsCall1','aprsCall2','aprsActive','aprsLogin','aprsServer','aprsPort','measSeconds','aprsLoc0','aprsLoc1','aprsLoc2','aprsTempOff0','aprsTempOff1','aprsTempOff2','logEnabled'];var p=new URLSearchParams();i.forEach(function(x){var e=document.getElementById(x);p.append(x, e.type==='checkbox'?(e.checked?'1':'0'):e.value);});return p.toString();}";
+    page += "function g(){var i=['ssid','pass','bmeHost','bmePath','location','ntpServer','tzOffsetHours','lang','slideSeconds','mainSeconds','graphWindow','brightDay','schedEnabled','brightNight','schedStart','schedEnd','dataSource','aprsCall0','aprsCall1','aprsCall2','aprsActive','aprsLogin','aprsServer','aprsPort','measSeconds','aprsLoc0','aprsLoc1','aprsLoc2','aprsTempOff0','aprsTempOff1','aprsTempOff2'];var p=new URLSearchParams();i.forEach(function(x){var e=document.getElementById(x);p.append(x, e.type==='checkbox'?(e.checked?'1':'0'):e.value);});return p.toString();}";
     page += "function save(){var s=document.getElementById('status');s.style.color='#FFAA3C';s.textContent='" + String(UI_SAVING[L]) + "';";
     page += "fetch('/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:g()})";
     page += ".then(function(r){return r.text();}).then(function(){s.style.color='#FFB000';s.textContent='\\u2713 " + String(UI_SAVED[L]) + "';})";
@@ -1151,7 +1125,6 @@ void setup() {
     config.schedEnabled = (server.arg("schedEnabled") == "1");
     config.schedStart = atoi(server.arg("schedStart").c_str());
     config.schedEnd = atoi(server.arg("schedEnd").c_str());
-    config.logEnabled = (server.arg("logEnabled") == "1");
     config.dataSource = atoi(server.arg("dataSource").c_str());
     config.aprsCall0 = server.arg("aprsCall0");
     config.aprsCall1 = server.arg("aprsCall1");
@@ -1191,41 +1164,11 @@ void setup() {
                    "\",\"aprsActive\":\"" + intToString(config.aprsActive) +
                    "\",\"aprsLogin\":\"" + config.aprsLogin +
                    "\",\"aprsServer\":\"" + config.aprsServer +
-                   "\",\"aprsPort\":\"" + intToString(config.aprsPort) + "\",\"measSeconds\":\"" + intToString(config.measSeconds) + "\",\"aprsLoc0\":\"" + config.aprsLoc0 + "\",\"aprsLoc1\":\"" + config.aprsLoc1 + "\",\"aprsLoc2\":\"" + config.aprsLoc2 + "\",\"aprsTempOff0\":\"" + config.aprsTempOff0 + "\",\"aprsTempOff1\":\"" + config.aprsTempOff1 + "\",\"aprsTempOff2\":\"" + config.aprsTempOff2 + "\",\"logEnabled\":\"" + String(config.logEnabled ? 1 : 0) + "\"}";
+                   "\",\"aprsPort\":\"" + intToString(config.aprsPort) + "\",\"measSeconds\":\"" + intToString(config.measSeconds) + "\",\"aprsLoc0\":\"" + config.aprsLoc0 + "\",\"aprsLoc1\":\"" + config.aprsLoc1 + "\",\"aprsLoc2\":\"" + config.aprsLoc2 + "\",\"aprsTempOff0\":\"" + config.aprsTempOff0 + "\",\"aprsTempOff1\":\"" + config.aprsTempOff1 + "\",\"aprsTempOff2\":\"" + config.aprsTempOff2 + "\"}";
         f.print(j); f.close();
       }
     }
     server.send(200, "text/plain", "OK");
-  });
-
-  server.on("/log", HTTP_GET, []() {
-    String out;
-    out.reserve(logCount * 100);
-    for (uint8_t i = 0; i < logCount; i++) {
-      uint8_t idx = (logHead + LOG_LINES - logCount + i) % LOG_LINES;
-      out += logBuf[idx]; out += "\n";
-    }
-    if (!config.logEnabled) out += "(log disabled - enable \"Web console log\" in settings and save)\n";
-    server.send(200, "text/plain", out);
-  });
-
-  server.on("/logclear", HTTP_POST, []() {
-    logHead = 0; logCount = 0;
-    server.send(200, "text/plain", "OK");
-  });
-
-  server.on("/console", HTTP_GET, []() {
-    String p = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>MiniWX Receiver Console</title>";
-    p += "<style>html{background:#0d0f12;}body{max-width:900px;margin:0 auto;background:#181b20;color:#e8e8e8;font-family:'Segoe UI',Arial,sans-serif;padding:16px;}";
-    p += "h2{color:#FFB000;}pre{background:#0d0f12;border:1px solid #2a2f37;border-radius:8px;padding:12px;font-size:12px;line-height:1.45;white-space:pre-wrap;word-break:break-all;min-height:300px;max-height:70vh;overflow-y:auto;}";
-    p += "button{font-size:14px;padding:8px 16px;margin:6px 6px 6px 0;background:#1f232a;color:#e8e8e8;border:1px solid #2a2f37;border-radius:8px;cursor:pointer;}button:hover{background:#FFB000;color:#000;}#st{color:#8a9099;font-size:12px;}</style></head><body>";
-    p += "<h2>Console</h2><p id='st'></p><pre id='log'>loading...</pre>";
-    p += "<button id='pb' onclick='paused=!paused;this.textContent=paused?\"Resume\":\"Pause\";'>Pause</button>";
-    p += "<button onclick='fetch(\"/logclear\",{method:\"POST\"}).then(function(){upd(true);});'>Clear</button>";
-    p += "<button onclick='window.location=\"/\";'>Back</button>";
-    p += "<script>var paused=false;function upd(f){if(paused&&!f)return;fetch('/log').then(function(r){return r.text();}).then(function(t){var e=document.getElementById('log');var atEnd=e.scrollTop+e.clientHeight>=e.scrollHeight-8;e.textContent=t||'(empty)';if(atEnd)e.scrollTop=e.scrollHeight;document.getElementById('st').textContent='auto-refresh 2s';});}upd();setInterval(function(){upd(false);},2000);</script>";
-    p += "</body></html>";
-    server.send(200, "text/html", p);
   });
 
   server.on("/reboot", HTTP_POST, []() {
