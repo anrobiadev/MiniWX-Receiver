@@ -1,6 +1,12 @@
 # MiniWX Receiver
 
-A compact weather **display** for the **GeekMagic SmallTV-Ultra** (ESP8266 + ST7789 240×240 IPS). It shows live weather on a clean clock-and-metrics screen, follows up to **three stations**, draws **history graphs**, and can take its data either from a **MiniWX Server** on your LAN (see my MiniWX project on my GIT) or directly from **APRS-IS**. The interface is trilingual (Romanian / English / Hungarian).
+<img width="873" height="873" alt="image" src="https://github.com/user-attachments/assets/4bc9a436-f8cb-4e48-b6fb-b95a2d7e1368" />
+
+<img width="873" height="873" alt="image" src="https://github.com/user-attachments/assets/d46c5e37-ea82-4605-98cb-66af51630edf" />
+
+
+
+A compact weather **display** for the **GeekMagic SmallTV-Ultra** (ESP8266 + ST7789 240×240 IPS). It shows live weather on a clean clock-and-metrics screen, follows up to **three stations**, draws **history graphs**, and can take its data either from a **MiniWX Server** on your LAN (see my MiniWX Server project on my GIT) or directly from **APRS-IS**. The interface is trilingual (Romanian / English / Hungarian).
 
 > **Firmware Ver. 3.02** — Developed and maintained by **YO7ZRO**.
 
