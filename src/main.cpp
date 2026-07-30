@@ -56,6 +56,9 @@ struct DeviceConfig {
   String  aprsTempOff0;   // BME280 temperature correction for station 1 (deg C, e.g. -2.0)
   String  aprsTempOff1;   // BME280 temperature correction for station 2
   String  aprsTempOff2;   // BME280 temperature correction for station 3
+  String  aprsSrc0;       // source callsign for station 1 (for APRS objects, e.g. YO8RXT-15)
+  String  aprsSrc1;       // source callsign for station 2
+  String  aprsSrc2;       // source callsign for station 3
   bool    logEnabled;     // web console log (RAM ring buffer) enabled?
 };
 
@@ -63,7 +66,7 @@ struct DeviceConfig {
 DeviceConfig config = {
   "", "", "192.168.88.191", "jquery", "pool.ntp.org", 0, "", 0, 0, 60, 0, 100, 20, false, 21, 6,
   /*dataSource*/ 0, /*aprsCall0*/ "", /*aprsCall1*/ "", /*aprsCall2*/ "", /*aprsActive*/ 0,
-  /*aprsLogin*/ "", /*aprsServer*/ "rotate.aprs2.net", /*aprsPort*/ 14580, /*measSeconds*/ 120, /*aprsLoc0*/ "", /*aprsLoc1*/ "", /*aprsLoc2*/ "", /*aprsTempOff0*/ "0", /*aprsTempOff1*/ "0", /*aprsTempOff2*/ "0", /*logEnabled*/ false
+  /*aprsLogin*/ "", /*aprsServer*/ "rotate.aprs2.net", /*aprsPort*/ 14580, /*measSeconds*/ 120, /*aprsLoc0*/ "", /*aprsLoc1*/ "", /*aprsLoc2*/ "", /*aprsTempOff0*/ "0", /*aprsTempOff1*/ "0", /*aprsTempOff2*/ "0", /*aprsSrc0*/ "", /*aprsSrc1*/ "", /*aprsSrc2*/ "", /*logEnabled*/ false
 };
 
 TFT_eSPI tft = TFT_eSPI();
@@ -361,7 +364,7 @@ void pollWeather() {
 
 /*---------------- Data source: APRS-IS (read-only) ----------------*/
 #define APRS_NONE     (-100000L)
-#define APRS_STALE_MS 1200000UL      // 20 min without a packet -> data considered stale
+#define APRS_STALE_MS 2700000UL      // 45 min without a packet -> data considered stale
 
 struct AprsStation { float tC; float hum; float pres; unsigned long lastMs; bool valid; String comment; };
 AprsStation   aprsSt[3];
@@ -369,6 +372,11 @@ WiFiClient    aprsClient;
 String        aprsRxBuf;
 unsigned long aprsLastConn = 0;
 
+String aprsSrcOf(int i) {
+  if (i == 0) return config.aprsSrc0;
+  if (i == 1) return config.aprsSrc1;
+  return config.aprsSrc2;
+}
 String aprsCallOf(int i) {
   if (i == 0) return config.aprsCall0;
   if (i == 1) return config.aprsCall1;
@@ -377,12 +385,19 @@ String aprsCallOf(int i) {
 
 String aprsBuildFilter() {
   String calls = "";
+  String srcs  = "";
   for (int i = 0; i < 3; i++) {
     String c = aprsCallOf(i); c.trim();
     if (c.length()) { calls += "/"; calls += c; }
+    String sc = aprsSrcOf(i); sc.trim();
+    if (sc.length()) { srcs += "/"; srcs += sc; }
   }
-  if (!calls.length()) return "";
-  return "b" + calls + " e" + calls;     // buddy filter + entry/object filter
+  if (!calls.length() && !srcs.length()) return "";
+  String f = "";
+  if (calls.length()) f += "b" + calls;
+  if (srcs.length()) { if (f.length()) f += " "; f += "b"; f += srcs; }
+  if (calls.length()) { f += " o"; f += calls; }
+  return f;
 }
 
 // extract an APRS field of the form <letter><digits> (e.g. t072, h45, b10130)
@@ -426,18 +441,26 @@ void aprsParseLine(const String &line) {
     String c = aprsCallOf(i); c.trim(); c.toUpperCase();
     if (c.length() && c == src) { idx = i; break; }
   }
-  // if FROM didn't match, check for APRS object name (;NAME     * format)
+  // if FROM didn't match, check for APRS object (;NAME     *) or item ()NAME!)
   if (idx < 0) {
     String info = line.substring(co + 1);
+    String objName;
     if (info.length() >= 10 && info[0] == ';') {
-      String objName = info.substring(1, 10); objName.trim(); objName.toUpperCase();
+      objName = info.substring(1, 10);                      // object: 9-char padded name
+    } else if (info.length() >= 4 && info[0] == ')') {
+      int sep = info.indexOf('!', 1);                       // item: )NAME! or )NAME_
+      if (sep < 0) sep = info.indexOf('_', 1);
+      if (sep > 1) objName = info.substring(1, sep);
+    }
+    objName.trim(); objName.toUpperCase();
+    if (objName.length()) {
       for (int i = 0; i < 3; i++) {
         String c = aprsCallOf(i); c.trim(); c.toUpperCase();
         if (c.length() && c == objName) { idx = i; break; }
       }
     }
   }
-  if (idx < 0) return;
+  if (idx < 0) { logMsg("APRS? no match: " + line.substring(0, 60)); return; }
   String info = line.substring(co + 1);
 
   // --- WX data (tXXX/hXX/bXXXXX), anchored on the '_' symbol ---
@@ -487,6 +510,7 @@ void aprsEnsureConnected() {
     aprsRxBuf = "";
     Serial.printf("APRS-IS conectat %s:%d  [%s]\n", srv.c_str(), port, cmd.c_str());
     logMsg("APRS-IS connected " + srv + ":" + String(port) + " [" + cmd + "]");
+    logMsg("filter: " + aprsBuildFilter());
   } else {
     Serial.printf("APRS-IS conectare esuata la %s:%d\n", srv.c_str(), port);
     logMsg("ERROR: APRS-IS connect failed " + srv + ":" + String(port));
@@ -1008,6 +1032,9 @@ void setup() {
       if ((v = extractJsonValue(s, "brightNight")).length())  config.brightNight = atoi(v.c_str());
       if ((v = extractJsonValue(s, "schedEnabled")).length()) config.schedEnabled = (atoi(v.c_str()) != 0);
       if ((v = extractJsonValue(s, "logEnabled")).length())   config.logEnabled   = (atoi(v.c_str()) != 0);
+      config.aprsSrc0 = extractJsonValue(s, "aprsSrc0");
+      config.aprsSrc1 = extractJsonValue(s, "aprsSrc1");
+      config.aprsSrc2 = extractJsonValue(s, "aprsSrc2");
       if ((v = extractJsonValue(s, "schedStart")).length())   config.schedStart = atoi(v.c_str());
       if ((v = extractJsonValue(s, "schedEnd")).length())     config.schedEnd = atoi(v.c_str());
       if ((v = extractJsonValue(s, "dataSource")).length()) config.dataSource = atoi(v.c_str());
@@ -1070,7 +1097,7 @@ void setup() {
     tft.drawString("http://" + apIP.toString(), 120, 148, 2);
   }
 
-  server.on("/", HTTP_GET, []() {
+  server.on("/config", HTTP_GET, []() {
     int L = curLang();
     String page = "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>MiniWX Receiver</title>";
     page += "<style>html{background:#0d0f12;}";
@@ -1102,6 +1129,11 @@ void setup() {
     page += "<label>" + String(UI_TEMPOFF[L]) + " 1</label><input id=\"aprsTempOff0\" value=\"" + config.aprsTempOff0 + "\">";
     page += "<label>" + String(UI_TEMPOFF[L]) + " 2</label><input id=\"aprsTempOff1\" value=\"" + config.aprsTempOff1 + "\">";
     page += "<label>" + String(UI_TEMPOFF[L]) + " 3</label><input id=\"aprsTempOff2\" value=\"" + config.aprsTempOff2 + "\">";
+    page += "<h2 style=\"margin-top:16px;font-size:16px;\">Object source (optional)</h2>";
+    page += "<p style=\"color:#8a9099;font-size:12px;\">For APRS objects (airports, wx relays), enter the callsign that transmits them (e.g. YO8RXT-15).</p>";
+    page += "<label>Source 1</label><input id=\"aprsSrc0\" value=\"" + config.aprsSrc0 + "\">";
+    page += "<label>Source 2</label><input id=\"aprsSrc1\" value=\"" + config.aprsSrc1 + "\">";
+    page += "<label>Source 3</label><input id=\"aprsSrc2\" value=\"" + config.aprsSrc2 + "\">";
     page += "<label>" + String(UI_APRSACTIVE[L]) + "</label><select id=\"aprsActive\">";
     page += "<option value=\"0\"" + String(config.aprsActive==0?" selected":"") + ">1</option>";
     page += "<option value=\"1\"" + String(config.aprsActive==1?" selected":"") + ">2</option>";
@@ -1132,14 +1164,14 @@ void setup() {
     page += "<label>" + String(UI_FROM[L]) + "</label><input id=\"schedStart\" type=\"number\" min=\"0\" max=\"23\" value=\"" + intToString(config.schedStart) + "\">";
     page += "<label>" + String(UI_TO[L]) + "</label><input id=\"schedEnd\" type=\"number\" min=\"0\" max=\"23\" value=\"" + intToString(config.schedEnd) + "\">";
     page += "<label><input id=\"logEnabled\" type=\"checkbox\"" + String(config.logEnabled ? " checked" : "") + ">Web console log</label>";
-    page += "<button type=\"button\" onclick=\"window.open('/weather','_blank')\">Weather</button>";
+    page += "<button type=\"button\" onclick=\"window.location='/'\">Weather</button>";
     page += "<button type=\"button\" onclick=\"window.open('/console','_blank')\">Console</button><span style=\"color:#8a9099;font-size:12px;margin-left:8px;\">(opens in a new page)</span>";
     page += "<button onclick=\"save()\">" + String(UI_SAVE[L]) + "</button>";
     page += "<button id=\"rb\" onclick=\"reboot()\">" + String(UI_REBOOT[L]) + "</button>";
     page += "<p style=\"color:#FFB000;opacity:0.7;font-size:13px;margin-top:14px;text-align:center;\">MiniWX Receiver " APP_VERSION " &mdash; Developed by YO7ZRO</p>";
     page += "<p id=\"status\"></p>";
     page += "<script>";
-    page += "function g(){var i=['ssid','pass','bmeHost','bmePath','location','ntpServer','tzOffsetHours','lang','slideSeconds','mainSeconds','graphWindow','brightDay','schedEnabled','brightNight','schedStart','schedEnd','dataSource','aprsCall0','aprsCall1','aprsCall2','aprsActive','aprsLogin','aprsServer','aprsPort','measSeconds','aprsLoc0','aprsLoc1','aprsLoc2','aprsTempOff0','aprsTempOff1','aprsTempOff2','logEnabled'];var p=new URLSearchParams();i.forEach(function(x){var e=document.getElementById(x);p.append(x, e.type==='checkbox'?(e.checked?'1':'0'):e.value);});return p.toString();}";
+    page += "function g(){var i=['ssid','pass','bmeHost','bmePath','location','ntpServer','tzOffsetHours','lang','slideSeconds','mainSeconds','graphWindow','brightDay','schedEnabled','brightNight','schedStart','schedEnd','dataSource','aprsCall0','aprsCall1','aprsCall2','aprsActive','aprsLogin','aprsServer','aprsPort','measSeconds','aprsLoc0','aprsLoc1','aprsLoc2','aprsTempOff0','aprsTempOff1','aprsTempOff2','aprsSrc0','aprsSrc1','aprsSrc2','logEnabled'];var p=new URLSearchParams();i.forEach(function(x){var e=document.getElementById(x);p.append(x, e.type==='checkbox'?(e.checked?'1':'0'):e.value);});return p.toString();}";
     page += "function save(){var s=document.getElementById('status');s.style.color='#FFAA3C';s.textContent='" + String(UI_SAVING[L]) + "';";
     page += "fetch('/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:g()})";
     page += ".then(function(r){return r.text();}).then(function(){s.style.color='#FFB000';s.textContent='\\u2713 " + String(UI_SAVED[L]) + "';})";
@@ -1166,6 +1198,9 @@ void setup() {
     config.schedEnabled = (server.arg("schedEnabled") == "1");
     config.schedStart = atoi(server.arg("schedStart").c_str());
     config.schedEnd = atoi(server.arg("schedEnd").c_str());
+    config.aprsSrc0 = server.arg("aprsSrc0");
+    config.aprsSrc1 = server.arg("aprsSrc1");
+    config.aprsSrc2 = server.arg("aprsSrc2");
     config.logEnabled = (server.arg("logEnabled") == "1");
     config.dataSource = atoi(server.arg("dataSource").c_str());
     config.aprsCall0 = server.arg("aprsCall0");
@@ -1206,7 +1241,7 @@ void setup() {
                    "\",\"aprsActive\":\"" + intToString(config.aprsActive) +
                    "\",\"aprsLogin\":\"" + config.aprsLogin +
                    "\",\"aprsServer\":\"" + config.aprsServer +
-                   "\",\"aprsPort\":\"" + intToString(config.aprsPort) + "\",\"measSeconds\":\"" + intToString(config.measSeconds) + "\",\"aprsLoc0\":\"" + config.aprsLoc0 + "\",\"aprsLoc1\":\"" + config.aprsLoc1 + "\",\"aprsLoc2\":\"" + config.aprsLoc2 + "\",\"aprsTempOff0\":\"" + config.aprsTempOff0 + "\",\"aprsTempOff1\":\"" + config.aprsTempOff1 + "\",\"aprsTempOff2\":\"" + config.aprsTempOff2 + "\",\"logEnabled\":\"" + String(config.logEnabled ? 1 : 0) + "\"}";
+                   "\",\"aprsPort\":\"" + intToString(config.aprsPort) + "\",\"measSeconds\":\"" + intToString(config.measSeconds) + "\",\"aprsLoc0\":\"" + config.aprsLoc0 + "\",\"aprsLoc1\":\"" + config.aprsLoc1 + "\",\"aprsLoc2\":\"" + config.aprsLoc2 + "\",\"aprsTempOff0\":\"" + config.aprsTempOff0 + "\",\"aprsTempOff1\":\"" + config.aprsTempOff1 + "\",\"aprsTempOff2\":\"" + config.aprsTempOff2 + "\",\"aprsSrc0\":\"" + config.aprsSrc0 + "\",\"aprsSrc1\":\"" + config.aprsSrc1 + "\",\"aprsSrc2\":\"" + config.aprsSrc2 + "\",\"logEnabled\":\"" + String(config.logEnabled ? 1 : 0) + "\"}";
         f.print(j); f.close();
       }
     }
@@ -1280,7 +1315,7 @@ void setup() {
   });
 
   // ---- /weather: live weather dashboard ----
-  server.on("/weather", HTTP_GET, []() {
+  server.on("/", HTTP_GET, []() {
     String p = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>MiniWX Receiver Weather</title>";
     p += "<style>html{background:#0d0f12;}body{max-width:1000px;margin:0 auto;background:#0d0f12;color:#e8e8e8;font-family:'Segoe UI',Arial,sans-serif;padding:16px;}";
     p += "h2{color:#FFB000;margin-bottom:4px;}a{color:#FFB000;text-decoration:none;}";
@@ -1298,7 +1333,7 @@ void setup() {
     p += "<h2>MiniWX Receiver " APP_VERSION "</h2>";
     p += "<div class='sub'>Live weather data &mdash; auto-refresh 5 s</div>";
     p += "<div id='wx'>loading...</div>";
-    p += "<button onclick='window.location=\"/\";'>Settings</button>";
+    p += "<button onclick='window.location=\"/config\";'>Settings</button>";
     p += "<button onclick='window.open(\"/console\",\"_blank\");'>Console</button>";
     p += "<div class='foot'>MiniWX Receiver " APP_VERSION " &mdash; Developed by YO7ZRO</div>";
     p += "<script>";
