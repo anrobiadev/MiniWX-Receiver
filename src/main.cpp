@@ -10,7 +10,7 @@
  */
 
 //**** APPLICATION VERSION (single source: device footer + web footer) ****
-#define APP_VERSION "v3.10"
+#define APP_VERSION "v3.21"
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
@@ -376,13 +376,13 @@ String aprsCallOf(int i) {
 }
 
 String aprsBuildFilter() {
-  String f = "";
+  String calls = "";
   for (int i = 0; i < 3; i++) {
     String c = aprsCallOf(i); c.trim();
-    if (c.length()) { f += "/"; f += c; }
+    if (c.length()) { calls += "/"; calls += c; }
   }
-  if (f.length()) f = "b" + f;           // buddy filter: b/CALL1/CALL2...
-  return f;
+  if (!calls.length()) return "";
+  return "b" + calls + " e" + calls;     // buddy filter + entry/object filter
 }
 
 // extract an APRS field of the form <letter><digits> (e.g. t072, h45, b10130)
@@ -425,6 +425,17 @@ void aprsParseLine(const String &line) {
   for (int i = 0; i < 3; i++) {
     String c = aprsCallOf(i); c.trim(); c.toUpperCase();
     if (c.length() && c == src) { idx = i; break; }
+  }
+  // if FROM didn't match, check for APRS object name (;NAME     * format)
+  if (idx < 0) {
+    String info = line.substring(co + 1);
+    if (info.length() >= 10 && info[0] == ';') {
+      String objName = info.substring(1, 10); objName.trim(); objName.toUpperCase();
+      for (int i = 0; i < 3; i++) {
+        String c = aprsCallOf(i); c.trim(); c.toUpperCase();
+        if (c.length() && c == objName) { idx = i; break; }
+      }
+    }
   }
   if (idx < 0) return;
   String info = line.substring(co + 1);
@@ -494,8 +505,11 @@ void aprsPoll() {
 
 int activeStations(int idxOut[MAXSTA]) {
   if (config.dataSource != 1) { idxOut[0] = 0; return 1; }   // local: a single source
+  int limit = config.aprsActive + 1;                         // 0->1 station, 1->2, 2->3
+  if (limit < 1) limit = 1;
+  if (limit > MAXSTA) limit = MAXSTA;
   int n = 0;
-  for (int i = 0; i < MAXSTA; i++) {
+  for (int i = 0; i < MAXSTA && n < limit; i++) {
     String c = aprsCallOf(i); c.trim();
     if (c.length()) idxOut[n++] = i;
   }
@@ -1118,6 +1132,7 @@ void setup() {
     page += "<label>" + String(UI_FROM[L]) + "</label><input id=\"schedStart\" type=\"number\" min=\"0\" max=\"23\" value=\"" + intToString(config.schedStart) + "\">";
     page += "<label>" + String(UI_TO[L]) + "</label><input id=\"schedEnd\" type=\"number\" min=\"0\" max=\"23\" value=\"" + intToString(config.schedEnd) + "\">";
     page += "<label><input id=\"logEnabled\" type=\"checkbox\"" + String(config.logEnabled ? " checked" : "") + ">Web console log</label>";
+    page += "<button type=\"button\" onclick=\"window.open('/weather','_blank')\">Weather</button>";
     page += "<button type=\"button\" onclick=\"window.open('/console','_blank')\">Console</button><span style=\"color:#8a9099;font-size:12px;margin-left:8px;\">(opens in a new page)</span>";
     page += "<button onclick=\"save()\">" + String(UI_SAVE[L]) + "</button>";
     page += "<button id=\"rb\" onclick=\"reboot()\">" + String(UI_REBOOT[L]) + "</button>";
@@ -1225,6 +1240,84 @@ void setup() {
     p += "<button onclick='window.location=\"/\";'>Back</button>";
     p += "<script>var paused=false;function upd(f){if(paused&&!f)return;fetch('/log').then(function(r){return r.text();}).then(function(t){var e=document.getElementById('log');var atEnd=e.scrollTop+e.clientHeight>=e.scrollHeight-8;e.textContent=t||'(empty)';if(atEnd)e.scrollTop=e.scrollHeight;document.getElementById('st').textContent='auto-refresh 2s';});}upd();setInterval(function(){upd(false);},2000);</script>";
     p += "</body></html>";
+    server.send(200, "text/html", p);
+  });
+
+  // ---- /wxdata: JSON with all station data (for /weather page) ----
+  server.on("/wxdata", HTTP_GET, []() {
+    String j = "[";
+    int idx[MAXSTA]; int nSta = activeStations(idx);
+    for (int k = 0; k < nSta; k++) {
+      int i = idx[k];
+      if (k) j += ",";
+      j += "{";
+      if (config.dataSource == 1) {
+        AprsStation &a = aprsSt[i];
+        j += "\"name\":\"" + buildLocationLabel(i) + "\",";
+        j += "\"call\":\"" + aprsCallOf(i) + "\",";
+        j += "\"temp\":" + String(a.tC, 2) + ",";
+        j += "\"pres\":" + String(a.pres, 1) + ",";
+        j += "\"hum\":" + String(a.hum, 0) + ",";
+        j += "\"dew\":" + String(aprsDewPoint(a.tC, a.hum), 1) + ",";
+        j += "\"feel\":" + String(aprsHeatIndexC(a.tC, a.hum), 1) + ",";
+        j += "\"comment\":\"" + a.comment + "\",";
+        j += "\"valid\":" + String(a.valid ? 1 : 0) + ",";
+        j += "\"age\":" + String(a.valid ? (millis() - a.lastMs) / 1000 : -1);
+      } else {
+        j += "\"name\":\"" + buildLocationLabel(0) + "\",";
+        j += "\"call\":\"\",";
+        j += "\"temp\":" + weatherValues[1] + ",";
+        j += "\"pres\":" + weatherValues[2] + ",";
+        j += "\"hum\":" + weatherValues[3] + ",";
+        j += "\"dew\":" + weatherValues[4] + ",";
+        j += "\"feel\":" + weatherValues[5] + ",";
+        j += "\"comment\":\"\",\"valid\":1,\"age\":0";
+      }
+      j += "}";
+    }
+    j += "]";
+    server.send(200, "application/json", j);
+  });
+
+  // ---- /weather: live weather dashboard ----
+  server.on("/weather", HTTP_GET, []() {
+    String p = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>MiniWX Receiver Weather</title>";
+    p += "<style>html{background:#0d0f12;}body{max-width:1000px;margin:0 auto;background:#0d0f12;color:#e8e8e8;font-family:'Segoe UI',Arial,sans-serif;padding:16px;}";
+    p += "h2{color:#FFB000;margin-bottom:4px;}a{color:#FFB000;text-decoration:none;}";
+    p += ".sub{color:#8a9099;font-size:13px;margin-bottom:16px;}";
+    p += ".sta{background:#181b20;border-radius:10px;padding:14px 18px;margin-bottom:14px;}";
+    p += ".sta-h{display:flex;justify-content:space-between;color:#8a9099;font-size:13px;border-bottom:1px solid #2a2f37;padding-bottom:8px;margin-bottom:12px;}";
+    p += ".sta-h b{color:#FFB000;font-size:16px;}";
+    p += ".grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));}";
+    p += ".c{background:#1f232a;border-radius:8px;padding:12px 14px;}";
+    p += ".c .lab{color:#8a9099;font-size:13px;margin-bottom:10px;}";
+    p += ".c .val{font-size:28px;font-weight:300;}";
+    p += ".cmt{color:#8a9099;font-size:12px;margin-top:8px;font-style:italic;}";
+    p += ".foot{color:#8a9099;font-size:12px;text-align:center;margin-top:16px;}";
+    p += "button{font-size:14px;padding:8px 16px;margin:6px 6px 6px 0;background:#1f232a;color:#e8e8e8;border:1px solid #2a2f37;border-radius:8px;cursor:pointer;}button:hover{background:#FFB000;color:#000;}</style></head><body>";
+    p += "<h2>MiniWX Receiver " APP_VERSION "</h2>";
+    p += "<div class='sub'>Live weather data &mdash; auto-refresh 5 s</div>";
+    p += "<div id='wx'>loading...</div>";
+    p += "<button onclick='window.location=\"/\";'>Settings</button>";
+    p += "<button onclick='window.open(\"/console\",\"_blank\");'>Console</button>";
+    p += "<div class='foot'>MiniWX Receiver " APP_VERSION " &mdash; Developed by YO7ZRO</div>";
+    p += "<script>";
+    p += "function upd(){fetch('/wxdata').then(function(r){return r.json();}).then(function(d){";
+    p += "var h='';for(var i=0;i<d.length;i++){var s=d[i];";
+    p += "h+='<div class=sta><div class=sta-h><b>'+s.name+'</b><span>'+(s.call||'local')+(s.valid?' &middot; '+s.age+'s ago':' &middot; no data')+'</span></div>';";
+    p += "h+='<div class=grid>';";
+    p += "h+='<div class=c><div class=lab>Temperature (&deg;C)</div><div class=val>'+s.temp.toFixed(2)+'</div></div>';";
+    p += "h+='<div class=c><div class=lab>Pressure (hPa)</div><div class=val>'+s.pres.toFixed(1)+'</div></div>';";
+    p += "h+='<div class=c><div class=lab>Humidity (%)</div><div class=val>'+s.hum.toFixed(0)+'</div></div>';";
+    p += "h+='<div class=c><div class=lab>Dew point (&deg;C)</div><div class=val>'+s.dew.toFixed(1)+'</div></div>';";
+    p += "h+='<div class=c><div class=lab>Real feel (&deg;C)</div><div class=val>'+s.feel.toFixed(1)+'</div></div>';";
+    p += "h+='</div>';";
+    p += "if(s.comment)h+='<div class=cmt>'+s.comment+'</div>';";
+    p += "h+='</div>';";
+    p += "}document.getElementById('wx').innerHTML=h||'<p>No station data</p>';";
+    p += "}).catch(function(){document.getElementById('wx').innerHTML='<p style=color:#FF7A5A>Connection error</p>';});}";
+    p += "upd();setInterval(upd,5000);";
+    p += "</script></body></html>";
     server.send(200, "text/html", p);
   });
 
